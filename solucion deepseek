@@ -1,0 +1,249 @@
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from scipy.interpolate import interp1d
+
+class SugarTankSystem:
+    """
+    Sistema de tanques interconectados para mezcla azúcar-agua
+    Modelo parametrizado para verificación de diseño y saturación
+    """
+    
+    def __init__(self, temperature=20):
+        # Parámetros base del sistema (fácilmente modificables)
+        self.params = {
+            # Volúmenes de los tanques [m³]
+            'V': np.array([1.0, 1.2, 1.5]),
+            
+            # Caudales [L/min] - luego se convierten a [m³/s]
+            'Q0': 0.3, 'Q1': 1.5, 'Q2': 1.8, 'Q3': 0.6, 'QC': 2.0,
+            
+            # Concentraciones [g/m³]
+            'cQ2': 6.25e3,  # Concentración fija Q2
+            'c1_base': 2.5e4,  # Para cálculo de cQ1(t)
+            
+            # Temperatura de operación [°C]
+            'temperature': temperature,
+            
+            # Concentraciones iniciales [g/m³]
+            'c0': np.array([20.0, 5.0, 0.0]) * 1000,  # Convertir kg/m³ to g/m³
+        }
+        
+        # Convertir caudales a [m³/s]
+        self._convert_flow_rates()
+        
+        # Configurar solubilidad en función de temperatura
+        self._setup_solubility()
+        
+        # Estado de saturación
+        self.saturation_warnings = []
+    
+    def _convert_flow_rates(self):
+        """Convertir caudales de L/min a m³/s"""
+        L_min_to_m3_s = 1/1000 * 1/60  # Conversión
+        for key in ['Q0', 'Q1', 'Q2', 'Q3', 'QC']:
+            self.params[key] *= L_min_to_m3_s
+    
+    def _setup_solubility(self):
+        """Configurar límite de solubilidad en función de temperatura"""
+        # Datos de solubilidad de la Tabla 1 [g/100mL] → [g/m³]
+        temp_data = np.array([0, 25, 75, 100])
+        solubility_data = np.array([179, 211, 340, 487]) * 10  # g/m³ (×10 por 100mL→L, ×1000 L→m³)
+        
+        # Interpolación lineal para la temperatura actual
+        self.solubility_interp = interp1d(temp_data, solubility_data, 
+                                         kind='linear', fill_value='extrapolate')
+        self.params['solubility_limit'] = float(self.solubility_interp(self.params['temperature']))
+    
+    def cQ1(self, t):
+        """Concentración variable en Q1 en función del tiempo"""
+        # cQ1(t) = c1 * (2.0 + sin(0.003491*t) + 0.3*sin(0.005236*t))
+        return self.params['c1_base'] * (2.0 + np.sin(0.003491*t) + 0.3*np.sin(0.005236*t))
+    
+    def system_odes(self, t, c):
+        """
+        Ecuaciones diferenciales del sistema
+        c = [c1, c2, c3] concentraciones en cada tanque [g/m³]
+        """
+        c1, c2, c3 = c
+        p = self.params
+        
+        # Flujos másicos de entrada/salida
+        # Tanque 1
+        dcdt1 = (p['Q0']*0 + p['Q1']*self.cQ1(t) - (p['Q0'] + p['Q1'])*c1) / p['V'][0]
+        
+        # Tanque 2
+        dcdt2 = ((p['Q0'] + p['Q1'])*c1 + p['Q2']*p['cQ2'] - 
+                (p['Q0'] + p['Q1'] + p['Q2'])*c2) / p['V'][1]
+        
+        # Tanque 3
+        Q_out = p['Q3'] + 0.25*p['QC']
+        dcdt3 = ((p['Q0'] + p['Q1'] + p['Q2'])*c2 - Q_out*c3) / p['V'][2]
+        
+        return [dcdt1, dcdt2, dcdt3]
+    
+    def check_saturation(self, t, c):
+        """Verificar condiciones de saturación en cada tanque"""
+        saturation_detected = False
+        for i, conc in enumerate(c):
+            if conc > self.params['solubility_limit']:
+                self.saturation_warnings.append({
+                    'time': t,
+                    'tank': i+1,
+                    'concentration': conc,
+                    'limit': self.params['solubility_limit']
+                })
+                saturation_detected = True
+        return saturation_detected
+    
+    def simulate(self, t_span=(0, 3600), t_eval=None):
+        """Simular el sistema completo"""
+        if t_eval is None:
+            t_eval = np.linspace(t_span[0], t_span[1], 1000)
+        
+        # Reiniciar advertencias de saturación
+        self.saturation_warnings = []
+        
+        # Función con verificación de saturación
+        def odes_with_saturation(t, c):
+            self.check_saturation(t, c)
+            return self.system_odes(t, c)
+        
+        # Resolver EDOs
+        solution = solve_ivp(odes_with_saturation, t_span, self.params['c0'], 
+                           t_eval=t_eval, method='RK45')
+        
+        return solution
+    
+    def perturb_flow_rate(self, flow_name, perturbation_time, new_value_L_min):
+        """
+        Perturbar un caudal en tiempo específico
+        Ejemplo de función para evaluar alteraciones
+        """
+        original_value = self.params[flow_name]
+        new_value_m3_s = new_value_L_min * (1/1000) * (1/60)
+        
+        def perturbed_flow(t):
+            return new_value_m3_s if t >= perturbation_time else original_value
+        
+        return perturbed_flow
+    
+    def analyze_design(self, t_span=(0, 3600)):
+        """Análisis completo del diseño del sistema"""
+        print("=== ANÁLISIS DE DISEÑO DEL SISTEMA ===")
+        print(f"Temperatura de operación: {self.params['temperature']}°C")
+        print(f"Límite de solubilidad: {self.params['solubility_limit']:.0f} g/m³")
+        print()
+        
+        # Simulación nominal
+        sol = self.simulate(t_span)
+        
+        # Análisis de resultados
+        steady_state = sol.y[:, -1]
+        max_concentrations = np.max(sol.y, axis=1)
+        safety_margins = (self.params['solubility_limit'] - max_concentrations) / self.params['solubility_limit'] * 100
+        
+        print("--- Concentraciones de estado estable ---")
+        for i, (ss, max_conc, margin) in enumerate(zip(steady_state, max_concentrations, safety_margins)):
+            print(f"Tanque {i+1}: {ss:.0f} g/m³ (máx: {max_conc:.0f} g/m³, margen: {margin:.1f}%)")
+        
+        print()
+        print("--- Verificación de saturación ---")
+        if self.saturation_warnings:
+            for warning in self.saturation_warnings[:3]:  # Mostrar primeras 3 advertencias
+                print(f"⚠️  Saturación en Tanque {warning['tank']} a t={warning['time']:.0f}s")
+                print(f"   Concentración: {warning['concentration']:.0f} g/m³ > Límite: {warning['limit']:.0f} g/m³")
+        else:
+            print("✅ Sistema opera dentro de límites de solubilidad")
+        
+        return sol, safety_margins
+
+# -------------------------------------------------------------------
+# EJEMPLOS DE USO Y VERIFICACIÓN
+# -------------------------------------------------------------------
+
+def ejemplo_parametrizacion():
+    """Ejemplo 1: Verificación del diseño base"""
+    print("=== EJEMPLO 1: DISEÑO BASE A 20°C ===")
+    sistema = SugarTankSystem(temperature=20)
+    sol, margins = sistema.analyze_design()
+    
+    # Gráficas
+    plt.figure(figsize=(12, 8))
+    
+    plt.subplot(2, 2, 1)
+    for i in range(3):
+        plt.plot(sol.t/60, sol.y[i], label=f'Tanque {i+1}')
+    plt.axhline(y=sistema.params['solubility_limit'], color='r', linestyle='--', 
+                label='Límite de solubilidad')
+    plt.xlabel('Tiempo (min)')
+    plt.ylabel('Concentración (g/m³)')
+    plt.title('Evolución de concentraciones')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(2, 2, 2)
+    plt.bar(range(1, 4), margins)
+    plt.axhline(y=0, color='r', linestyle='-')
+    plt.xlabel('Tanque')
+    plt.ylabel('Margen de seguridad (%)')
+    plt.title('Margen respecto a saturación')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+def ejemplo_sensibilidad_temperatura():
+    """Ejemplo 2: Análisis de sensibilidad a temperatura"""
+    print("\n=== EJEMPLO 2: SENSIBILIDAD A TEMPERATURA ===")
+    
+    temperaturas = [20, 40, 60, 80]
+    resultados = []
+    
+    for temp in temperaturas:
+        sistema = SugarTankSystem(temperature=temp)
+        sol, margins = sistema.analyze_design()
+        resultados.append({
+            'temperature': temp,
+            'solubility_limit': sistema.params['solubility_limit'],
+            'steady_state': sol.y[:, -1],
+            'safety_margins': margins
+        })
+    
+    # Gráfica comparativa
+    plt.figure(figsize=(10, 6))
+    
+    for i, res in enumerate(resultados):
+        plt.plot(range(1, 4), res['steady_state']/1000, 'o-', 
+                label=f'{res["temperature"]}°C (límite: {res["solubility_limit"]/1000:.0f} kg/m³)')
+    
+    plt.xlabel('Tanque')
+    plt.ylabel('Concentración estado estable (kg/m³)')
+    plt.title('Sensibilidad a temperatura')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+def ejemplo_perturbacion():
+    """Ejemplo 3: Efecto de perturbación en caudal"""
+    print("\n=== EJEMPLO 3: PERTURBACIÓN EN CAUDAL Q2 ===")
+    
+    sistema = SugarTankSystem(temperature=20)
+    
+    # Simular aumento del 50% en Q2 a los 30 minutos
+    perturbacion_tiempo = 30 * 60  # 30 minutos en segundos
+    Q2_original = sistema.params['Q2'] / (1/1000 * 1/60)  # Convertir a L/min
+    Q2_perturbado = Q2_original * 1.5  # +50%
+    
+    print(f"Caudal Q2 original: {Q2_original:.1f} L/min")
+    print(f"Caudal Q2 perturbado: {Q2_perturbado:.1f} L/min (a partir de t=30min)")
+    
+    # Aquí se implementaría la simulación con caudal variable
+    # (requeriría modificar la función system_odes para aceptar caudales variables)
+
+if __name__ == "__main__":
+    # Ejecutar ejemplos
+    ejemplo_parametrizacion()
+    ejemplo_sensibilidad_temperatura()
+    ejemplo_perturbacion()
