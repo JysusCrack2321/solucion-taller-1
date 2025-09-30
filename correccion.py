@@ -1,141 +1,151 @@
+# %%
 import numpy as np
-import matplotlib.pyplot as plt
+from dataclasses import dataclass
 from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
 
-class SistemaTanques:
-    def __init__(self):
-        # Parámetros del sistema - TODOS en m³/s y kg/m³
-        self.V1, self.V2, self.V3 = 1.0, 1.2, 1.5  # m³
-        
-        # Conversión L/min → m³/s
-        def Lmin_to_m3s(x):
-            return x / 1000.0 / 60.0
-        
-        # Caudales [m³/s]
-        self.Q0 = Lmin_to_m3s(0.3)
-        self.Q1 = Lmin_to_m3s(1.5)
-        self.Q2 = Lmin_to_m3s(1.8)
-        self.Q3 = Lmin_to_m3s(0.6)
-        self.QA = Lmin_to_m3s(18.72)
-        self.QB = Lmin_to_m3s(15.84)
-        self.QC = Lmin_to_m3s(12.0)
-        
-        # Concentraciones fijas [kg/m³]
-        self.c_Q2 = 6.25  # kg/m³
-        
-        print("=== PARÁMETROS DEL SISTEMA ===")
-        print(f"Volúmenes: V1={self.V1}, V2={self.V2}, V3={self.V3} [m³]")
-        print(f"Caudales [m³/s]: Q0={self.Q0:.6f}, Q1={self.Q1:.6f}, Q2={self.Q2:.6f}")
-        print(f"QA={self.QA:.6f}, QB={self.QB:.6f}, QC={self.QC:.6f}, Q3={self.Q3:.6f}")
-    
-    def c_Q1(self, t):
-        """Concentración variable en Q1 [kg/m³]"""
-        # c1 = 25,000 g/m³ = 25 kg/m³
-        c1_base = 25.0
-        return c1_base * (2.0 + np.sin(0.003491*t) + 0.3*np.sin(0.005236*t))
-    
-    def sistema_edos(self, t, C):
-        """
-        Sistema de EDOs: dC/dt = f(t, C)
-        C = [C1, C2, C3] - concentraciones en cada tanque [kg/m³]
-        """
-        C1, C2, C3 = C
-        
-        # TANQUE 1: dC1/dt
-        entrada_T1 = (self.Q0 * 0 +                    # Q0 (agua pura)
-                     self.Q1 * self.c_Q1(t) +          # Q1 con c_Q1(t)
-                     0.75 * self.QC * C3 +             # 3/4 QC recirculado
-                     0.5 * self.QB * C2)               # 1/2 QB de T2
-        
-        salida_T1 = self.QA * C1
-        dC1dt = (entrada_T1 - salida_T1) / self.V1
-        
-        # TANQUE 2: dC2/dt  
-        entrada_T2 = (0.75 * self.QA * C1 +            # 3/4 QA de T1
-                     self.Q2 * self.c_Q2)              # Q2 con c_Q2 = 6.25
-        
-        salida_T2 = self.QB * C2
-        dC2dt = (entrada_T2 - salida_T2) / self.V2
-        
-        # TANQUE 3: dC3/dt
-        entrada_T3 = (0.5 * self.QB * C2 +             # 1/2 QB de T2
-                     0.25 * self.QA * C1)              # 1/4 QA de T1
-        
-        salida_T3 = (self.Q3 + self.QC) * C3           # Q3 + QC total salida
-        dC3dt = (entrada_T3 - salida_T3) / self.V3
-        
-        return [dC1dt, dC2dt, dC3dt]
-    
-    def resolver_rk4(self, t_span=(0, 8*3600), C0=[20.0, 5.0, 0.0], n_points=1000):
-        """Resuelve el sistema usando RK4 (solve_ivp)"""
-        
-        # Tiempo de evaluación
-        t_eval = np.linspace(t_span[0], t_span[1], n_points)
-        
-        # Resolver con RK45 (Runge-Kutta de 4º-5º orden)
-        sol = solve_ivp(self.sistema_edos, t_span, C0, 
-                       method='RK45', t_eval=t_eval, rtol=1e-6, atol=1e-8)
-        
-        return sol.t, sol.y
-    
-    def graficar_resultados(self, t, C):
-        """Grafica las concentraciones vs tiempo"""
-        C1, C2, C3 = C
-        
-        plt.figure(figsize=(12, 8))
-        
-        # Concentraciones vs tiempo
-        plt.subplot(2, 1, 1)
-        plt.plot(t/3600, C1, label='C1 - Tanque 1', linewidth=2)
-        plt.plot(t/3600, C2, label='C2 - Tanque 2', linewidth=2)
-        plt.plot(t/3600, C3, label='C3 - Tanque 3', linewidth=2)
-        
-        plt.xlabel('Tiempo [horas]')
-        plt.ylabel('Concentración [kg/m³]')
-        plt.title('Evolución de Concentraciones - Sistema de 3 Tanques')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # c_Q1(t) vs tiempo
-        plt.subplot(2, 1, 2)
-        c_Q1_vals = [self.c_Q1(ti) for ti in t]
-        plt.plot(t/3600, c_Q1_vals, 'r--', label='c_Q1(t) - Entrada T1', linewidth=2)
-        plt.xlabel('Tiempo [horas]')
-        plt.ylabel('Concentración Q1 [kg/m³]')
-        plt.title('Concentración de Entrada Q1')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def analizar_resultados(self, t, C):
-        """Análisis de los resultados"""
-        C1, C2, C3 = C
-        
-        print("\n=== ANÁLISIS DE RESULTADOS ===")
-        print(f"Concentración final C1: {C1[-1]:.2f} kg/m³")
-        print(f"Concentración final C2: {C2[-1]:.2f} kg/m³")
-        print(f"Concentración final C3: {C3[-1]:.2f} kg/m³")
-        print(f"Concentración línea Q3: {C3[-1]:.2f} kg/m³")
-        
-        # Verificar balance de masa
-        masa_final = C1[-1]*self.V1 + C2[-1]*self.V2 + C3[-1]*self.V3
-        print(f"Masa total en sistema: {masa_final:.2f} kg")
+# ---------- Parámetros del modelo ----------
+@dataclass
+class Params:
+    # Físicos/geométricos (pon tus valores en SI)
+    rho: float = 1000.0      # [kg/m^3] densidad
+    d: float = 0.5e-3        # [m] "altura" de la ranura/canal
+    W: float = 5e-3          # [m] "ancho" de la ranura/canal
+    mu: float = 1.0e-3       # [Pa·s] viscosidad
+    L: float = 10e-3         # [m] longitud del canal
+    R: float = 8.314         # [J/(mol·K)] constante gas ideal
+    T: float = 298.0         # [K] temperatura
+    H: float = 2.0e-3        # [m] altura máxima de la cámara
+    A: float = 1.0e-4        # [m^2] área efectiva del diafragma
 
-# 🚀 EJECUCIÓN PRINCIPAL
+    # Mecánicos
+    k1: float = 5e4          # [N/m]
+    k2: float = 0.0          # [N/m^2] (no lineal opcional)
+    c1: float = 5.0          # [N·s/m]
+    c2: float = 0.0          # [N·s^2/m^2] (no lineal opcional)
+
+    # Presión externa
+    p_ext: float = 101325.0  # [Pa]
+
+    # Excitación f(t) en la ecuación de x¨
+    f_type: str = "pulse"     # "sine" | "pulse" | "const"
+    f_amp: float = 50.0      # [N] amplitud fuerza
+    f_freq: float = 30.0     # [Hz] solo para "sine"
+    f_bias: float = 0.0      # [N] sesgo DC
+    pulse_t0: float = 0.05   # [s]
+    pulse_dt: float = 0.01   # [s]
+
+
+def f_drive(t: float, P: Params) -> float:
+    """Fuerza de excitación f(t) que entra en x¨."""
+    if P.f_type == "sine":
+        return P.f_bias + P.f_amp * np.sin(2*np.pi*P.f_freq*t)
+    elif P.f_type == "pulse":
+        return P.f_bias + (P.f_amp if (P.pulse_t0 <= t <= P.pulse_t0 + P.pulse_dt) else 0.0)
+    else:  # "const"
+        return P.f_bias + P.f_amp
+
+
+def rhs(t, y, P: Params):
+    """
+    Sistema en primer orden:
+      y = [x, v, p] = [x, dx/dt, p]
+    Ecuaciones:
+      x' = v
+      v' = f(t) - k1 x - k2 x^2 - c1 v - c2 v^2 - A*(p - p_ext)
+      p' = rho*p*((d*W^3)/(12*mu*L))*(R*T)/(d^2*(H - x)) + (p/(H - x))*v
+    """
+    x, v, p = y
+
+    # Seguridad: evitar división por cero (H - x debe ser > 0)
+    denom = P.H - x
+    eps = 1e-9
+    if denom < eps:
+        denom = eps
+
+    # Coeficiente del término viscoso/geométrico (según tu ecuación)
+    Q_coeff = (P.d * P.W**3) / (12.0 * P.mu * P.L)
+
+    # p'
+    dpdt = P.rho * p * Q_coeff * (P.R * P.T) / (P.d**2 * denom) + (p / denom) * v
+
+    # v'
+    delta_p = p - P.p_ext
+    dvdt = f_drive(t, P) - P.k1 * x - P.k2 * x**2 - P.c1 * v - P.c2 * v**2 - P.A * delta_p
+
+    # x'
+    dxdt = v
+
+    return [dxdt, dvdt, dpdt]
+
+
+def event_touch_ceiling(t, y, P: Params):
+    """
+    Evento para detener si x -> H (golpea el techo). Cuando value=0, se detiene.
+    """
+    x = y[0]
+    margin = 1e-6  # 1 micra de margen
+    return (P.H - margin) - x
+
+event_touch_ceiling.terminal = True
+event_touch_ceiling.direction = -1  # cruza decreciendo hacia 0
+
+
+# ---------- Simulación ----------
 if __name__ == "__main__":
-    # Crear sistema
-    sistema = SistemaTanques()
-    
-    # Condiciones iniciales [kg/m³]
-    C0 = [20.0, 5.0, 0.0]
-    
-    # Resolver por 8 horas (28800 segundos)
-    t, C = sistema.resolver_rk4(t_span=(0, 100*3600), C0=C0)
-    
-    # Graficar resultados
-    sistema.graficar_resultados(t, C)
-    
-    # Análisis
-    sistema.analizar_resultados(t, C)
+    P = Params()
+
+    # Condiciones iniciales
+    x0 = 0.0            # [m]
+    v0 = 0.0            # [m/s]
+    p0 = P.p_ext        # [Pa] empezar en equilibrio
+    y0 = [x0, v0, p0]
+
+    # Ventana temporal
+    t0, tf = 0.0, 0.2   # [s]
+    t_eval = np.linspace(t0, tf, 4000)
+
+    sol = solve_ivp(
+        fun=lambda t, y: rhs(t, y, P),
+        t_span=(t0, tf),
+        y0=y0,
+        t_eval=t_eval,
+        events=lambda t, y: event_touch_ceiling(t, y, P),
+        rtol=1e-7,
+        atol=1e-9,
+        method="RK45",   # Cambia a "Radau" si notas rigidez
+    )
+
+    if not sol.success:
+        print("Integración no exitosa:", sol.message)
+
+    t = sol.t
+    x, v, p = sol.y
+
+    # ---------- Gráficas ----------
+    plt.figure()
+    plt.plot(t, x)
+    plt.xlabel("t [s]")
+    plt.ylabel("x(t) [m]")
+    plt.title("Desplazamiento del diafragma")
+
+    plt.figure()
+    plt.plot(t, v)
+    plt.xlabel("t [s]")
+    plt.ylabel("v(t) = dx/dt [m/s]")
+    plt.title("Velocidad")
+
+    plt.figure()
+    plt.plot(t, p)
+    plt.xlabel("t [s]")
+    plt.ylabel("p(t) [Pa]")
+    plt.title("Presión interna")
+
+    # Retrato de fase (x vs v)
+    plt.figure()
+    plt.plot(x, v)
+    plt.xlabel("x [m]")
+    plt.ylabel("v [m/s]")
+    plt.title("Retrato de fase")
+
+    plt.show()
